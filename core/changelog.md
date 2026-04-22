@@ -1,0 +1,1 @@
+- fix: drops empty thinking block for anthropic provider for claude code
