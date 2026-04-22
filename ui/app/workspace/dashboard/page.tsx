@@ -149,13 +149,11 @@ export default function DashboardPage() {
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
-	// Period is local state only — clicking a period sets start/end in URL, but period itself
-	// is not persisted so refresh shows the actual date range rather than a stale period label
-	const [activePeriod, setActivePeriod] = useState<string | undefined>(undefined);
 
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
 		{
+			period: parseAsString.withDefault(""),
 			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
 			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
 			tab: parseAsString.withDefault("overview"),
@@ -520,10 +518,9 @@ export default function DashboardPage() {
 	// Adapter: converts a full LogFilters object to dashboard's CSV-based URL state
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
-			if (newFilters.start_time !== undefined || newFilters.end_time !== undefined) {
-				setActivePeriod(undefined);
-			}
-			setUrlState({
+			const timeChanged = newFilters.start_time !== undefined || newFilters.end_time !== undefined;
+		setUrlState({
+				...(timeChanged && { period: "" }),
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
 				providers: (newFilters.providers || []).join(","),
@@ -557,8 +554,7 @@ export default function DashboardPage() {
 		(period: string | undefined) => {
 			if (!period) return;
 			const { start, end } = getTimeRangeFromPeriod(period);
-			setActivePeriod(period);
-			setUrlState({ start_time: start, end_time: end });
+			setUrlState({ period, start_time: start, end_time: end });
 		},
 		[setUrlState],
 	);
@@ -566,8 +562,8 @@ export default function DashboardPage() {
 	const handleDateRangeChange = useCallback(
 		(range: { from?: Date; to?: Date }) => {
 			if (!range.from || !range.to) return;
-			setActivePeriod(undefined);
 			setUrlState({
+				period: "",
 				start_time: dateUtils.toUnixTimestamp(range.from),
 				end_time: dateUtils.toUnixTimestamp(range.to),
 			});
@@ -770,7 +766,7 @@ export default function DashboardPage() {
 							dateTime={dateRange}
 							onDateTimeUpdate={handleDateRangeChange}
 							preDefinedPeriods={TIME_PERIODS}
-							predefinedPeriod={activePeriod}
+							predefinedPeriod={urlState.period || undefined}
 							onPredefinedPeriodChange={handlePeriodChange}
 							triggerTestId="dashboard-filter-daterange"
 							popupAlignment="end"
