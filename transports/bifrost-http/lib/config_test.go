@@ -2002,6 +2002,67 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 }
 
+func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	existing := &schemas.MCPClientConfig{
+		ID:             "mcp-existing",
+		Name:           "echo_http",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ToolsToExecute: schemas.WhiteList{"read"},
+	}
+	existingHash, err := configstore.GenerateMCPClientHash(mcpClientConfigToTable(existing))
+	require.NoError(t, err)
+	existing.ConfigHash = existingHash
+
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{existing},
+	}
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:           "echo_http",
+				ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ToolsToExecute: schemas.WhiteList{"*"},
+			},
+			{
+				Name:           "filesystem_tools",
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig: &schemas.MCPStdioConfig{
+					Command: "npx",
+				},
+				ToolsToExecute: schemas.WhiteList{"*"},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "expected one updated MCP client")
+	require.Equal(t, "mcp-existing", store.mcpClientConfigUpdates[0].ID)
+	require.Equal(t, "echo_http", store.mcpClientConfigUpdates[0].Config.Name)
+	require.Equal(t, schemas.WhiteList{"*"}, store.mcpClientConfigUpdates[0].Config.ToolsToExecute)
+	require.NotEmpty(t, store.mcpClientConfigUpdates[0].Config.ConfigHash)
+
+	require.Len(t, store.mcpConfigsCreated, 1, "expected one created MCP client")
+	require.Equal(t, "filesystem_tools", store.mcpConfigsCreated[0].Name)
+	require.NotEmpty(t, store.mcpConfigsCreated[0].ID)
+	require.NotEmpty(t, store.mcpConfigsCreated[0].ConfigHash)
+
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 2)
+	byName := map[string]*schemas.MCPClientConfig{}
+	for _, client := range cfg.MCPConfig.ClientConfigs {
+		byName[client.Name] = client
+	}
+	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
+	require.NotEmpty(t, byName["echo_http"].ConfigHash)
+	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
+}
+
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
 func TestLoadConfig_Governance_Merge(t *testing.T) {
 	// Setup DB governance config

@@ -5,7 +5,9 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -60,6 +62,30 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+}
+
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
+// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPConfig
+	aux := &struct {
+		ToolSyncInterval any `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{
+		alias: (*alias)(c),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.ToolSyncInterval == nil {
+		return nil
+	}
+	dur, err := parseFlexibleDurationField(aux.ToolSyncInterval, "tool_sync_interval")
+	if err != nil {
+		return err
+	}
+	c.ToolSyncInterval = dur
+	return nil
 }
 
 type MCPToolManagerConfig struct {
@@ -128,6 +154,47 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+}
+
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
+// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPClientConfig
+	aux := &struct {
+		ToolSyncInterval any `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{
+		alias: (*alias)(c),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.ToolSyncInterval == nil {
+		return nil
+	}
+	dur, err := parseFlexibleDurationField(aux.ToolSyncInterval, "tool_sync_interval")
+	if err != nil {
+		return err
+	}
+	c.ToolSyncInterval = dur
+	return nil
+}
+
+func parseFlexibleDurationField(v any, fieldName string) (time.Duration, error) {
+	switch t := v.(type) {
+	case string:
+		d, err := time.ParseDuration(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s duration %q: %w", fieldName, t, err)
+		}
+		return d, nil
+	case float64:
+		// Backward compatibility path: numeric JSON values were historically
+		// decoded directly into time.Duration (nanoseconds).
+		return time.Duration(t), nil
+	default:
+		return 0, fmt.Errorf("invalid %s type %T: expected duration string (e.g. \"10m\") or number", fieldName, v)
+	}
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.

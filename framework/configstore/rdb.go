@@ -1452,6 +1452,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
 		}
+		var stdioConfigJSON *string
+		if clientConfigCopy.StdioConfig != nil {
+			stdioData, marshalErr := json.Marshal(clientConfigCopy.StdioConfig)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal stdio_config: %w", marshalErr)
+			}
+			stdioStr := string(stdioData)
+			stdioConfigJSON = &stdioStr
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1486,6 +1495,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
+		}
+		// Config-file driven reconciliation passes ConfigHash. In this mode we should
+		// also sync connection/auth metadata from config.json and persist the hash.
+		if clientConfigCopy.ConfigHash != "" {
+			updates["config_hash"] = clientConfigCopy.ConfigHash
+			updates["connection_type"] = clientConfigCopy.ConnectionType
+			updates["connection_string"] = clientConfigCopy.ConnectionString
+			updates["stdio_config_json"] = stdioConfigJSON
+			updates["auth_type"] = clientConfigCopy.AuthType
+			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)

@@ -127,9 +127,9 @@ type ConfigData struct {
 	// from config.json. Omitting this field or setting it to 2 uses v1.5.0+ semantics:
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
-	Version           int                                   `json:"version,omitempty"`
-	Client            *configstore.ClientConfig             `json:"client"`
-	EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
+	Version       int                       `json:"version,omitempty"`
+	Client        *configstore.ClientConfig `json:"client"`
+	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -1059,7 +1059,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 
 	if config.MCPConfig != nil {
 		// Merge with config file if present
-		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
+		if configData.MCP != nil {
 			mergeMCPConfig(ctx, config, configData, config.MCPConfig)
 		}
 	} else if configData.MCP != nil {
@@ -1080,6 +1080,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			}
 		}
 	}
+	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP)
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -1091,16 +1092,43 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 	tempMCPConfig := configData.MCP
 	config.MCPConfig = tempMCPConfig
-	// Merge ClientConfigs arrays by ClientID or Name
+	// Merge client configs by name with hash-based reconciliation.
 	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
+	clientConfigsToUpdate := make([]configstoreTables.TableMCPClient, 0)
 	for _, newClientConfig := range tempMCPConfig.ClientConfigs {
+		if newClientConfig == nil {
+			continue
+		}
 		if newClientConfig.ID == "" {
 			newClientConfig.ID = uuid.NewString()
 		}
+		fileClientRow := mcpClientConfigToTable(newClientConfig)
+		fileHash, err := configstore.GenerateMCPClientHash(fileClientRow)
+		if err != nil {
+			logger.Warn("failed to generate MCP client hash for %q: %v", newClientConfig.Name, err)
+			continue
+		}
+		newClientConfig.ConfigHash = fileHash
+		fileClientRow.ConfigHash = fileHash
+
 		found := false
-		for _, existingClientConfig := range mcpConfig.ClientConfigs {
+		for i, existingClientConfig := range mcpConfig.ClientConfigs {
+			if existingClientConfig == nil {
+				continue
+			}
 			if newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name {
 				found = true
+				if existingClientConfig.ConfigHash != fileHash {
+					logger.Debug("config hash mismatch for MCP client %q, syncing from config file", newClientConfig.Name)
+					newClientConfig.ID = existingClientConfig.ID
+					newClientConfig.ConfigHash = fileHash
+					fileClientRow.ClientID = existingClientConfig.ID
+					fileClientRow.ConfigHash = fileHash
+					clientConfigsToUpdate = append(clientConfigsToUpdate, fileClientRow)
+					mcpConfig.ClientConfigs[i] = newClientConfig
+				} else {
+					logger.Debug("config hash matches for MCP client %q, keeping DB config", newClientConfig.Name)
+				}
 				break
 			}
 		}
@@ -1108,11 +1136,11 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			clientConfigsToAdd = append(clientConfigsToAdd, newClientConfig)
 		}
 	}
-	// Add new client configs to existing ones
+	// Add new client configs to existing ones.
 	config.MCPConfig.ClientConfigs = append(mcpConfig.ClientConfigs, clientConfigsToAdd...)
-	// Update store with merged config
-	if config.ConfigStore != nil && len(clientConfigsToAdd) > 0 {
-		logger.Debug("updating MCP config in store with %d new client configs", len(clientConfigsToAdd))
+	// Persist additions and config-driven updates.
+	if config.ConfigStore != nil && (len(clientConfigsToAdd) > 0 || len(clientConfigsToUpdate) > 0) {
+		logger.Debug("updating MCP config in store with %d new clients and %d updated clients", len(clientConfigsToAdd), len(clientConfigsToUpdate))
 		for _, clientConfig := range clientConfigsToAdd {
 			if clientConfig != nil {
 				if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
@@ -1120,6 +1148,86 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 				}
 			}
 		}
+		for i := range clientConfigsToUpdate {
+			update := clientConfigsToUpdate[i]
+			if err := config.ConfigStore.UpdateMCPClientConfig(ctx, update.ClientID, &update); err != nil {
+				logger.Warn("failed to update MCP client config %q: %v", update.Name, err)
+			}
+		}
+	}
+}
+
+func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig) {
+	if config == nil || config.ClientConfig == nil || mcpCfg == nil {
+		return
+	}
+
+	changed := false
+	if mcpCfg.ToolManagerConfig != nil {
+		if mcpCfg.ToolManagerConfig.MaxAgentDepth > 0 && config.ClientConfig.MCPAgentDepth != mcpCfg.ToolManagerConfig.MaxAgentDepth {
+			config.ClientConfig.MCPAgentDepth = mcpCfg.ToolManagerConfig.MaxAgentDepth
+			changed = true
+		}
+		toolTimeoutSec := int(mcpCfg.ToolManagerConfig.ToolExecutionTimeout / time.Second)
+		if toolTimeoutSec > 0 && config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
+			config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
+			changed = true
+		}
+		if mcpCfg.ToolManagerConfig.CodeModeBindingLevel != "" {
+			codeModeLevel := string(mcpCfg.ToolManagerConfig.CodeModeBindingLevel)
+			if config.ClientConfig.MCPCodeModeBindingLevel != codeModeLevel {
+				config.ClientConfig.MCPCodeModeBindingLevel = codeModeLevel
+				changed = true
+			}
+		}
+		if config.ClientConfig.MCPDisableAutoToolInject != mcpCfg.ToolManagerConfig.DisableAutoToolInject {
+			config.ClientConfig.MCPDisableAutoToolInject = mcpCfg.ToolManagerConfig.DisableAutoToolInject
+			changed = true
+		}
+	}
+	if mcpCfg.ToolSyncInterval > 0 {
+		syncMinutes := int(mcpCfg.ToolSyncInterval / time.Minute)
+		if syncMinutes > 0 && config.ClientConfig.MCPToolSyncInterval != syncMinutes {
+			config.ClientConfig.MCPToolSyncInterval = syncMinutes
+			changed = true
+		}
+	}
+
+	if changed && config.ConfigStore != nil {
+		if err := config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+			logger.Warn("failed to update client config with MCP global settings: %v", err)
+		}
+	}
+}
+
+func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) configstoreTables.TableMCPClient {
+	if clientConfig == nil {
+		return configstoreTables.TableMCPClient{}
+	}
+	authType := string(clientConfig.AuthType)
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	return configstoreTables.TableMCPClient{
+		ClientID:                  clientConfig.ID,
+		Name:                      clientConfig.Name,
+		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ConnectionType:            string(clientConfig.ConnectionType),
+		ConnectionString:          clientConfig.ConnectionString,
+		StdioConfig:               clientConfig.StdioConfig,
+		AuthType:                  authType,
+		OauthConfigID:             clientConfig.OauthConfigID,
+		ToolsToExecute:            clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		Headers:                   clientConfig.Headers,
+		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:           clientConfig.IsPingAvailable,
+		ToolSyncInterval:          int(clientConfig.ToolSyncInterval.Minutes()),
+		ToolPricing:               clientConfig.ToolPricing,
+		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		DiscoveredTools:           clientConfig.DiscoveredTools,
+		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		ConfigHash:                clientConfig.ConfigHash,
 	}
 }
 
