@@ -258,7 +258,7 @@ func TestTableProvider_ProxyConfigEncryptDecrypt(t *testing.T) {
 	db := setupTestDB(t)
 
 	proxyConfig := &schemas.ProxyConfig{
-		URL: "https://proxy.example.com",
+		URL: schemas.NewEnvVar("https://proxy.example.com"),
 	}
 
 	provider := &TableProvider{
@@ -964,7 +964,7 @@ func TestTableProvider_UpdatePreservesDecryption(t *testing.T) {
 
 	provider := &TableProvider{
 		Name:        "update-provider",
-		ProxyConfig: &schemas.ProxyConfig{URL: "https://proxy-v1.example.com"},
+		ProxyConfig: &schemas.ProxyConfig{URL: schemas.NewEnvVar("https://proxy-v1.example.com")},
 	}
 	require.NoError(t, db.Create(provider).Error)
 
@@ -972,7 +972,7 @@ func TestTableProvider_UpdatePreservesDecryption(t *testing.T) {
 	require.NoError(t, db.First(&found, provider.ID).Error)
 	assert.Equal(t, "https://proxy-v1.example.com", found.ProxyConfig.URL)
 
-	found.ProxyConfig = &schemas.ProxyConfig{URL: "https://proxy-v2.example.com"}
+	found.ProxyConfig = &schemas.ProxyConfig{URL: schemas.NewEnvVar("https://proxy-v2.example.com")}
 	require.NoError(t, db.Save(&found).Error)
 
 	var found2 TableProvider
@@ -1423,8 +1423,8 @@ func TestTableProvider_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	provider := &TableProvider{
 		Name: "disabled-provider",
 		ProxyConfig: &schemas.ProxyConfig{
-			URL:      "https://proxy.example.com",
-			Password: "proxy-secret",
+			URL:      schemas.NewEnvVar("https://proxy.example.com"),
+			Password: schemas.NewEnvVar("proxy-secret"),
 		},
 	}
 

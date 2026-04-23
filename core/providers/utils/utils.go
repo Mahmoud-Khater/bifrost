@@ -293,37 +293,43 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	case schemas.NoProxy:
 		return client
 	case schemas.HTTPProxy:
-		if proxyConfig.URL == "" {
+		proxyURLValue := proxyConfig.URL.GetValue()
+		if proxyURLValue == "" {
 			getLogger().Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
-		proxyURL := proxyConfig.URL
-		if proxyConfig.Username != "" && proxyConfig.Password != "" {
-			parsedURL, err := url.Parse(proxyConfig.URL)
+		proxyURL := proxyURLValue
+		proxyUsername := proxyConfig.Username.GetValue()
+		proxyPassword := proxyConfig.Password.GetValue()
+		if proxyUsername != "" && proxyPassword != "" {
+			parsedURL, err := url.Parse(proxyURLValue)
 			if err != nil {
 				getLogger().Warn("Invalid proxy configuration: invalid HTTP proxy URL")
 				return client
 			}
 			// Set user and password in the parsed URL
-			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
+			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 			proxyURL = parsedURL.String()
 		}
 		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
-		if proxyConfig.URL == "" {
+		proxyURLValue := proxyConfig.URL.GetValue()
+		if proxyURLValue == "" {
 			getLogger().Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
 			return client
 		}
-		proxyURL := proxyConfig.URL
+		proxyURL := proxyURLValue
 		// Add authentication if provided
-		if proxyConfig.Username != "" && proxyConfig.Password != "" {
-			parsedURL, err := url.Parse(proxyConfig.URL)
+		proxyUsername := proxyConfig.Username.GetValue()
+		proxyPassword := proxyConfig.Password.GetValue()
+		if proxyUsername != "" && proxyPassword != "" {
+			parsedURL, err := url.Parse(proxyURLValue)
 			if err != nil {
 				getLogger().Warn("Invalid proxy configuration: invalid SOCKS5 proxy URL")
 				return client
 			}
 			// Set user and password in the parsed URL
-			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
+			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 			proxyURL = parsedURL.String()
 		}
 		dialFunc = fasthttpproxy.FasthttpSocksDialer(proxyURL)
@@ -340,8 +346,9 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	// Configure custom CA certificate if provided
-	if proxyConfig.CACertPEM != "" {
-		tlsConfig, err := createTLSConfigWithCA(proxyConfig.CACertPEM)
+	proxyCACertPEM := proxyConfig.CACertPEM.GetValue()
+	if proxyCACertPEM != "" {
+		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
 		if err != nil {
 			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
 		} else {
@@ -376,7 +383,8 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
-	if !networkConfig.InsecureSkipVerify && networkConfig.CACertPEM == "" {
+	caCertPEM := networkConfig.CACertPEM.GetValue()
+	if !networkConfig.InsecureSkipVerify && caCertPEM == "" {
 		return client
 	}
 
@@ -392,15 +400,15 @@ func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, 
 		tlsConfig.InsecureSkipVerify = true
 	}
 
-	if networkConfig.CACertPEM != "" {
-		caTLSConfig, err := createTLSConfigWithCA(networkConfig.CACertPEM)
+	if caCertPEM != "" {
+		caTLSConfig, err := createTLSConfigWithCA(caCertPEM)
 		if err != nil {
 			logger.Warn("Failed to configure custom CA certificate for provider: %v", err)
 		} else {
 			if tlsConfig.RootCAs != nil {
 				tlsConfig.RootCAs = tlsConfig.RootCAs.Clone()
 				// Merge: append network CA to existing pool (e.g. from proxy)
-				if !tlsConfig.RootCAs.AppendCertsFromPEM([]byte(networkConfig.CACertPEM)) {
+				if !tlsConfig.RootCAs.AppendCertsFromPEM([]byte(caCertPEM)) {
 					logger.Warn("Failed to append CA certificate to existing TLS config")
 				}
 			} else {

@@ -428,16 +428,19 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
-	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
-		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	if oldConfigRaw.NetworkConfig != nil && nc.CACertPEM != nil {
+		certVal := nc.CACertPEM.GetValue()
+		if certVal == "<REDACTED>" || certVal == "********" {
+			nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+		}
 	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
-		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
+		if payload.ProxyConfig.Password != nil && payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password.GetValue()) {
 			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
-		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
+		if payload.ProxyConfig.CACertPEM != nil && payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM.GetValue()) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
 		}
 	}

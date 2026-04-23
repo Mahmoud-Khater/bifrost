@@ -1,0 +1,13 @@
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    username: "bifrost"
+    password: "bifrost"
+    database: "bifrost"
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
